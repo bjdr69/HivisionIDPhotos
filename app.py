@@ -1,5 +1,10 @@
 import argparse
 import os
+
+# 预加载 PyTorch 和 cuDNN（在所有其他导入之前）
+import torch
+import onnxruntime as ort
+
 from demo.processor import IDPhotoProcessor
 from demo.ui import create_ui
 from hivision.creator.choose_handler import HUMAN_MATTING_MODELS

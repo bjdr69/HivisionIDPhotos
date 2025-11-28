@@ -56,24 +56,6 @@ LOCALES = {
             "label": "매팅 모델",
         },
     },
-    "process_mode": {
-        "en": {
-            "label": "Processing Mode",
-            "choices": ["Normal Mode", "Skip Background Removal"],
-        },
-        "zh": {
-            "label": "处理模式",
-            "choices": ["正常模式", "跳过抠图"],
-        },
-        "ja": {
-            "label": "処理モード",
-            "choices": ["通常モード", "背景除去をスキップ"],
-        },
-        "ko": {
-            "label": "처리 모드",
-            "choices": ["일반 모드", "배경 제거 건너뛰기"],
-        },
-    },
     "key_param": {
         "en": {
             "label": "Key Parameters",
@@ -688,22 +670,22 @@ LOCALES = {
     "plugin": {
         "en": {
             "label": "🤖Plugin",
-            "choices": ["Face Alignment", "Horizontal Flip", "Layout Photo Crop Line", "JPEG Format", "Five Inch Paper"],
+            "choices": ["Face Alignment", "Layout Photo Crop Line", "JPEG Format", "Five Inch Paper"],
             "value": ["Layout Photo Crop Line"]
         },
         "zh": {
             "label": "🤖插件",
-            "choices": ["人脸旋转对齐", "水平翻转", "排版照裁剪线", "JPEG格式"],
+            "choices": ["人脸旋转对齐", "排版照裁剪线", "JPEG格式"],
             "value": ["排版照裁剪线"]
         },
         "ja": {
             "label": "🤖プラグイン",
-            "choices": ["顔の整列", "水平反転", "レイアウト写真の切り取り線", "JPEGフォーマット"],
+            "choices": ["顔の整列", "レイアウト写真の切り取り線", "JPEGフォーマット"],
             "value": ["レイアウト写真の切り取り線"]
         },
         "ko": {
             "label": "🤖플러그인",
-            "choices": ["얼굴 정렬", "수평 반전", "레이아웃 사진 자르기 선", "JPEG 포맷", "오렌지 사진"],
+            "choices": ["얼굴 정렬", "레이아웃 사진 자르기 선", "JPEG 포맷", "오렌지 사진"],
             "value": ["레이아웃 사진 자르기 선"]
         },
     },
@@ -736,7 +718,7 @@ LOCALES = {
         },
     },
     "print_switch": {
-        "shape": [[1205, 1795], [1051, 1500], [2479, 3508], [1051, 1500], [1205, 1795]],
+        "shape": [[1205, 1795, 0], [1051, 1500, 0], [2479, 3508, 0], [1051, 1500, 0], [1205, 1795, 0]],
         "en": {
             "label": "Paper size",
             "choices": ["6 inch", "5 inch", "A4", "3R", "4R"],

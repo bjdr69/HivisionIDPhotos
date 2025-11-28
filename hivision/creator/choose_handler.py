@@ -1,5 +1,6 @@
 from hivision.creator.human_matting import *
 from hivision.creator.face_detector import *
+from hivision.creator.human_matting import extract_human_rmbg_2
 
 
 HUMAN_MATTING_MODELS = [
@@ -7,18 +8,26 @@ HUMAN_MATTING_MODELS = [
     "birefnet-v1-lite",
     "hivision_modnet",
     "rmbg-1.4",
+    "rmbg-2.0",
 ]
 
 FACE_DETECT_MODELS = ["face++ (联网Online API)", "mtcnn", "retinaface-resnet50"]
 
 
-def choose_handler(creator, matting_model_option=None, face_detect_option=None):
+def choose_handler(creator, matting_model_option=None, face_detect_option=None, 
+                  matting_sensitivity=0.95, matting_resolution=1024):
+    # 存储抠图参数到creator中，稍后在ctx创建时传递
+    creator.matting_sensitivity = matting_sensitivity
+    creator.matting_resolution = matting_resolution
+    
     if matting_model_option == "modnet_photographic_portrait_matting":
         creator.matting_handler = extract_human_modnet_photographic_portrait_matting
     elif matting_model_option == "mnn_hivision_modnet":
         creator.matting_handler = extract_human_mnn_modnet
     elif matting_model_option == "rmbg-1.4":
         creator.matting_handler = extract_human_rmbg
+    elif matting_model_option == "rmbg-2.0":
+        creator.matting_handler = extract_human_rmbg_2
     elif matting_model_option == "birefnet-v1-lite":
         creator.matting_handler = extract_human_birefnet_lite
     else:

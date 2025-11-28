@@ -33,7 +33,7 @@ def create_ui(
     else:
         DEFAULT_LANG = language[0]
 
-    DEFAULT_HUMAN_MATTING_MODEL = "modnet_photographic_portrait_matting"
+    DEFAULT_HUMAN_MATTING_MODEL = "hivision_modnet"
     DEFAULT_FACE_DETECT_MODEL = "retinaface-resnet50"
 
     if DEFAULT_HUMAN_MATTING_MODEL in human_matting_models:
@@ -70,6 +70,15 @@ def create_ui(
                         choices=human_matting_models,
                         label=LOCALES["matting_model"][DEFAULT_LANG]["label"],
                         value=human_matting_models[0],
+                    )
+                
+                with gr.Row():
+                    # 处理模式选择
+                    process_mode_options = gr.Radio(
+                        choices=LOCALES["process_mode"][DEFAULT_LANG]["choices"],
+                        label=LOCALES["process_mode"][DEFAULT_LANG]["label"],
+                        value=LOCALES["process_mode"][DEFAULT_LANG]["choices"][0],
+                        min_width=520,
                     )
 
                 # TAB1 - 关键参数 ------------------------------------------------
@@ -158,7 +167,7 @@ def create_ui(
                     head_measure_ratio_option = gr.Slider(
                         minimum=0.1,
                         maximum=0.5,
-                        value=0.2,
+                        value=0.22,
                         step=0.01,
                         label=LOCALES["head_measure_ratio"][DEFAULT_LANG]["label"],
                         interactive=True,
@@ -166,11 +175,28 @@ def create_ui(
                     top_distance_option = gr.Slider(
                         minimum=0.02,
                         maximum=0.5,
-                        value=0.12,
+                        value=0.08,
                         step=0.01,
                         label=LOCALES["top_distance"][DEFAULT_LANG]["label"],
                         interactive=True,
                     )
+                    
+                    # 抠图高级参数
+                    with gr.Row():
+                        matting_sensitivity_option = gr.Slider(
+                            minimum=0.1,
+                            maximum=1.0,
+                            value=0.95,
+                            step=0.05,
+                            label="抠图敏感度 / Matting Sensitivity",
+                            interactive=True,
+                        )
+                        matting_resolution_option = gr.Dropdown(
+                            choices=[512, 1024, 2048],
+                            label="处理分辨率 / Processing Resolution",
+                            value=1024,
+                            interactive=True,
+                        )
 
                     image_kb_options = gr.Radio(
                         choices=LOCALES["image_kb"][DEFAULT_LANG]["choices"],
@@ -425,6 +451,11 @@ def create_ui(
             # ---------------- 多语言切换函数 ----------------
             def change_language(language):
                 return {
+                    process_mode_options: gr.update(
+                        label=LOCALES["process_mode"][language]["label"],
+                        choices=LOCALES["process_mode"][language]["choices"],
+                        value=LOCALES["process_mode"][language]["choices"][0],
+                    ),
                     face_detect_model_options: gr.update(
                         label=LOCALES["face_model"][language]["label"]
                     ),
@@ -644,6 +675,7 @@ def create_ui(
                 change_language,
                 inputs=[language_options],
                 outputs=[
+                    process_mode_options,
                     size_list_options,
                     mode_options,
                     color_options,
@@ -765,6 +797,9 @@ def create_ui(
                     saturation_option,
                     plugin_options,
                     print_options,
+                    process_mode_options,
+                    matting_sensitivity_option,
+                    matting_resolution_option,
                 ],
                 outputs=[
                     img_output_standard,

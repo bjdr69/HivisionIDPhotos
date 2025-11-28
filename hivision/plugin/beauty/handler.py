@@ -1,4 +1,5 @@
 import cv2
+import numpy as np
 from hivision.creator.context import Context
 from hivision.plugin.beauty.whitening import make_whitening
 from hivision.plugin.beauty.base_adjust import (
@@ -42,7 +43,11 @@ def beauty_face(ctx: Context):
     if processed:
         # 分离中间图像的BGR通道
         b, g, r = cv2.split(middle_image)
-        # 从原始matting_image中获取alpha通道
-        _, _, _, alpha = cv2.split(ctx.matting_image)
-        # 合并处理后的BGR通道和原始alpha通道
+        # 如果是跳过抠图模式，创建一个全不透明的alpha通道
+        if ctx.params.crop_only:
+            alpha = np.ones(b.shape, dtype=b.dtype) * 255
+        else:
+            # 从原始matting_image中获取alpha通道
+            _, _, _, alpha = cv2.split(ctx.matting_image)
+        # 合并处理后的BGR通道和alpha通道
         ctx.matting_image = cv2.merge((b, g, r, alpha))

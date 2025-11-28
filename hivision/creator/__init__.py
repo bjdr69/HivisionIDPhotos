@@ -110,6 +110,13 @@ class IDCreator:
         
         self.ctx = Context(params)
         ctx = self.ctx
+        
+        # 传递抠图参数到ctx
+        if hasattr(self, 'matting_sensitivity'):
+            ctx.matting_sensitivity = self.matting_sensitivity
+        if hasattr(self, 'matting_resolution'):
+            ctx.matting_resolution = self.matting_resolution
+            
         ctx.processing_image = image
         ctx.processing_image = U.resize_image_esp(
             ctx.processing_image, 2000
@@ -117,27 +124,34 @@ class IDCreator:
         ctx.origin_image = ctx.processing_image.copy()
         self.before_all and self.before_all(ctx)
 
-        # 1. ------------------人像抠图------------------
+        # 1. ------------------人脸检测------------------
+        print("[1]  Start Face Detection...")
+        start_detection_time = time.time()
+        self.detection_handler(ctx)
+        end_detection_time = time.time()
+        print(f"[1]  Face Detection Time: {end_detection_time - start_detection_time:.3f}s")
+        self.after_detect and self.after_detect(ctx)
+
+        # 2. ------------------人像抠图------------------
         # 如果仅裁剪，则不进行抠图
         if not ctx.params.crop_only:
             # 调用抠图工作流
-            print("[1]  Start Human Matting...")
+            print("[2]  Start Human Matting...")
             start_matting_time = time.time()
             self.matting_handler(ctx)
             end_matting_time = time.time()
-            print(f"[1]  Human Matting Time: {end_matting_time - start_matting_time:.3f}s")
+            print(f"[2]  Human Matting Time: {end_matting_time - start_matting_time:.3f}s")
             self.after_matting and self.after_matting(ctx)
         # 如果进行抠图
         else:
             ctx.matting_image = ctx.processing_image
 
-
-        # 2. ------------------美颜------------------
-        print("[2]  Start Beauty...")
+        # 3. ------------------美颜------------------
+        print("[3]  Start Beauty...")
         start_beauty_time = time.time()
         self.beauty_handler(ctx)
         end_beauty_time = time.time()
-        print(f"[2]  Beauty Time: {end_beauty_time - start_beauty_time:.3f}s")
+        print(f"[3]  Beauty Time: {end_beauty_time - start_beauty_time:.3f}s")
 
         # 如果仅换底，则直接返回抠图结果
         if ctx.params.change_bg_only:
@@ -147,18 +161,10 @@ class IDCreator:
                 matting=ctx.matting_image,
                 clothing_params=None,
                 typography_params=None,
-                face=None,
+                face=ctx.face,
             )
             self.after_all and self.after_all(ctx)
             return ctx.result
-
-        # 3. ------------------人脸检测------------------
-        print("[3]  Start Face Detection...")
-        start_detection_time = time.time()
-        self.detection_handler(ctx)
-        end_detection_time = time.time()
-        print(f"[3]  Face Detection Time: {end_detection_time - start_detection_time:.3f}s")
-        self.after_detect and self.after_detect(ctx)
 
         # 3.1 ------------------人脸对齐------------------
         if ctx.params.face_alignment and abs(ctx.face["roll_angle"]) > 2:

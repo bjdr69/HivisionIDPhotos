@@ -1,0 +1,40 @@
+﻿On branch master
+Your branch is up to date with 'origin/master'.
+
+Changes not staged for commit:
+  (use "git add/rm <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   app.py
+	modified:   demo/assets/size_list_CN.csv
+	deleted:    demo/images/test0.jpg
+	modified:   demo/images/test1.jpg
+	deleted:    demo/images/test2.jpg
+	deleted:    demo/images/test3.jpg
+	deleted:    demo/images/test4.jpg
+	modified:   demo/locales.py
+	modified:   demo/processor.py
+	modified:   demo/ui.py
+	modified:   hivision/creator/__init__.py
+	modified:   hivision/creator/choose_handler.py
+	modified:   hivision/creator/human_matting.py
+	modified:   hivision/creator/layout_calculator.py
+	modified:   hivision/creator/photo_adjuster.py
+	modified:   hivision/creator/retinaface/inference.py
+	modified:   hivision/plugin/beauty/handler.py
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	MATTING_ENHANCEMENT_GUIDE.md
+	RMBG_2.0_UPGRADE_GUIDE.md
+	"demo/assets/size_list_CN - \345\211\257\346\234\254.csv"
+	demo/images/test5.jpg
+	demo/images/test6.jpg
+	"demo/locales - \345\211\257\346\234\254.py"
+	demo/locales.py.new
+	diff_output.txt
+	start.bat
+	status_output.txt
+	status_output_utf8.txt
+	venv/
+
+no changes added to commit (use "git add" and/or "git commit -a")

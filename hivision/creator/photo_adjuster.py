@@ -24,7 +24,35 @@ def adjust_photo(ctx: Context):
     w, h = face_rect[2], face_rect[3]
     height, width = ctx.matting_image.shape[:2]
     width_height_ratio = standard_size[0] / standard_size[1]
-    # Step2. 计算高级参数
+    
+    # Step2. 先获取头顶实际位置
+    # 检查是否为crop_only模式（没有进行抠图）
+    if ctx.params.crop_only:
+        # 在crop_only模式下，需要进行临时抠图来获得正确的头顶位置
+        from .human_matting import get_modnet_matting, WEIGHTS
+        
+        # 进行临时抠图获取alpha通道
+        temp_matting = get_modnet_matting(ctx.processing_image, WEIGHTS["hivision_modnet"])
+        _, _, _, alpha = cv2.split(temp_matting)
+        _, alpha = cv2.threshold(alpha, 127, 255, cv2.THRESH_BINARY)
+    else:
+        # 正常抠图模式，直接使用matting_image的alpha通道
+        _, _, _, alpha = cv2.split(ctx.matting_image)
+        _, alpha = cv2.threshold(alpha, 127, 255, cv2.THRESH_BINARY)
+    
+    # 在面部区域上方寻找头顶
+    search_start = max(0, int(y - h * 0.8))  # 从面部上方开始搜索
+    search_end = int(y)  # 搜索到面部顶部
+    face_left = max(0, int(x - w * 0.2))  # 面部左侧扩展
+    face_right = min(width, int(x + w + w * 0.2))  # 面部右侧扩展
+    
+    head_top = search_start
+    for i in range(search_start, search_end):
+        if np.any(alpha[i, face_left:face_right] > 0):
+            head_top = i
+            break
+    
+    # Step3. 计算高级参数
     face_center = (x + w / 2, y + h / 2)  # 面部中心坐标
     face_measure = w * h  # 面部面积
     crop_measure = (
@@ -39,58 +67,27 @@ def adjust_photo(ctx: Context):
         int(standard_size[1] * resize_ratio_single),
     )  # 裁剪框大小
 
-    # 裁剪框的定位信息
+    # 计算裁剪框位置
+    # 计算头顶空间（基于head_top_range参数）
+    top_distance_max, top_distance_min = params.head_top_range
+    # 使用top_distance_max作为头顶距离比例
+    desired_top_space = int(crop_size[0] * top_distance_max)  # 头顶空间为裁剪框高度的比例
+    
+    # 计算裁剪框的y坐标
+    y1 = int(head_top - desired_top_space)  # 基于头顶位置和参数化空间计算y1
+    y2 = y1 + crop_size[0]  # 计算y2
+    
+    # 计算裁剪框的x坐标（保持水平居中）
     x1 = int(face_center[0] - crop_size[1] / 2)
-    y1 = int(face_center[1] - crop_size[0] * params.head_height_ratio)
-    y2 = y1 + crop_size[0]
     x2 = x1 + crop_size[1]
 
-    # Step3, 裁剪框的调整
-    cut_image = IDphotos_cut(x1, y1, x2, y2, ctx.matting_image)
-    cut_image = cv2.resize(cut_image, (crop_size[1], crop_size[0]))
-    y_top, y_bottom, x_left, x_right = U.get_box(
-        cut_image.astype(np.uint8), model=2, correction_factor=0
-    )  # 得到 cut_image 中人像的上下左右距离信息
-
-    # Step5. 判定 cut_image 中的人像是否处于合理的位置，若不合理，则处理数据以便之后调整位置
-    # 检测人像与裁剪框左边或右边是否存在空隙
-    if x_left > 0 or x_right > 0:
-        status_left_right = 1
-        cut_value_top = int(
-            ((x_left + x_right) * width_height_ratio) / 2
-        )  # 减去左右，为了保持比例，上下也要相应减少 cut_value_top
-    else:
-        status_left_right = 0
-        cut_value_top = 0
-
-    """
-        检测人头顶与照片的顶部是否在合适的距离内：
-        - status==0: 距离合适，无需移动
-        - status=1: 距离过大，人像应向上移动
-        - status=2: 距离过小，人像应向下移动
-    """
-    status_top, move_value = U.detect_distance(
-        y_top - cut_value_top,
-        crop_size[0],
-        max=params.head_top_range[0],
-        min=params.head_top_range[1],
-    )
-
-    # Step6. 对照片的第二轮裁剪
-    if status_left_right == 0 and status_top == 0:
-        result_image = cut_image
-    else:
-        result_image = IDphotos_cut(
-            x1 + x_left,
-            y1 + cut_value_top + status_top * move_value,
-            x2 - x_right,
-            y2 - cut_value_top + status_top * move_value,
-            ctx.matting_image,
-        )
+    # Step3, 裁剪图像
+    result_image = IDphotos_cut(x1, y1, x2, y2, ctx.matting_image)
+    result_image = cv2.resize(result_image, (crop_size[1], crop_size[0]))
 
     # 换装参数准备
-    relative_x = x - (x1 + x_left)
-    relative_y = y - (y1 + cut_value_top + status_top * move_value)
+    relative_x = x - x1
+    relative_y = y - y1
 
     # Step7. 当照片底部存在空隙时，下拉至底部
     result_image, y_high = move(result_image.astype(np.uint8))
@@ -192,15 +189,33 @@ def IDphotos_cut(x1, y1, x2, y2, img):
 
 def move(input_image):
     """
-    裁剪主函数，输入一张 png 图像，该图像周围是透明的
+    裁剪主函数，输入一张 png 图像，该图像周围是透明的。
+    将图像底部的透明部分移动到顶部，使人像贴近底部。
     """
-    png_img = input_image  # 获取图像
-
-    height, width, channels = png_img.shape  # 高 y、宽 x
-    y_low, y_high, _, _ = U.get_box(png_img, model=2)  # for 循环
-    base = np.zeros((y_high, width, channels), dtype=np.uint8)  # for 循环
-    png_img = png_img[0 : height - y_high, :, :]  # for 循环
-    png_img = np.concatenate((base, png_img), axis=0)
+    png_img = input_image.copy()
+    height, width, channels = png_img.shape
+    
+    # 获取透明通道
+    _, _, _, alpha = cv2.split(png_img)
+    
+    # 找到底部最后一个非透明像素的位置
+    bottom_pos = height - 1
+    for i in range(height - 1, -1, -1):
+        if np.any(alpha[i, :] > 127):
+            bottom_pos = i
+            break
+    
+    # 计算底部空白的高度
+    y_high = height - bottom_pos - 1
+    
+    if y_high > 0:
+        # 创建顶部空白区域
+        base = np.zeros((y_high, width, channels), dtype=np.uint8)
+        # 裁剪掉底部空白
+        png_img = png_img[0:height - y_high, :, :]
+        # 将空白区域添加到顶部
+        png_img = np.concatenate((base, png_img), axis=0)
+    
     return png_img, y_high
 
 

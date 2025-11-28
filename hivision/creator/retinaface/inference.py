@@ -46,17 +46,16 @@ keep_top_k = 750
 save_image = True
 vis_thres = 0.6
 
-ONNX_DEVICE = (
-    "CUDAExecutionProvider"
-    if onnxruntime.get_device() == "GPU"
-    else "CPUExecutionProvider"
+ONNX_DEVICE = onnxruntime.get_device()
+ONNX_PROVIDER = (
+    "CUDAExecutionProvider" if ONNX_DEVICE == "GPU" and "CUDAExecutionProvider" in onnxruntime.get_available_providers() else "CPUExecutionProvider"
 )
 
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
     providers = (
         ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if ONNX_DEVICE == "CUDAExecutionProvider"
+        if ONNX_PROVIDER == "CUDAExecutionProvider"
         else ["CPUExecutionProvider"]
     )
 
@@ -67,14 +66,16 @@ def load_onnx_model(checkpoint_path, set_cpu=False):
     else:
         try:
             sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
+            print(f"RetinaFace model loaded with providers: {sess.get_providers()}")
         except Exception as e:
-            if ONNX_DEVICE == "CUDAExecutionProvider":
-                print(f"Failed to load model with CUDAExecutionProvider: {e}")
+            if ONNX_PROVIDER == "CUDAExecutionProvider":
+                print(f"Failed to load RetinaFace model with CUDAExecutionProvider: {e}")
                 print("Falling back to CPUExecutionProvider")
                 # 尝试使用CPU加载模型
                 sess = onnxruntime.InferenceSession(
                     checkpoint_path, providers=["CPUExecutionProvider"]
                 )
+                print(f"RetinaFace model loaded with providers: {sess.get_providers()}")
             else:
                 raise e  # 如果是CPU执行失败，重新抛出异常
 

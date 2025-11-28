@@ -32,14 +32,14 @@ def judge_layout(
     # 1.不转置排列的情况下：
     layout_col_no_transpose = 0  # 行
     layout_row_no_transpose = 0  # 列
-    for i in range(1, 4):
+    for i in range(1, 4):  # 最大3行
         centerBlockHeight_temp = input_height * i + PHOTO_INTERVAL_H * (i - 1)
         if centerBlockHeight_temp < LIMIT_BLOCK_H:
             centerBlockHeight_1 = centerBlockHeight_temp
             layout_row_no_transpose = i
         else:
             break
-    for j in range(1, 9):
+    for j in range(1, 4):  # 最大3列，限制为3x3
         centerBlockWidth_temp = input_width * j + PHOTO_INTERVAL_W * (j - 1)
         if centerBlockWidth_temp < LIMIT_BLOCK_W:
             centerBlockWidth_1 = centerBlockWidth_temp
@@ -51,14 +51,14 @@ def judge_layout(
     # 2.转置排列的情况下：
     layout_col_transpose = 0  # 行
     layout_row_transpose = 0  # 列
-    for i in range(1, 4):
+    for i in range(1, 4):  # 最大3行
         centerBlockHeight_temp = input_width * i + PHOTO_INTERVAL_H * (i - 1)
         if centerBlockHeight_temp < LIMIT_BLOCK_H:
             centerBlockHeight_2 = centerBlockHeight_temp
             layout_row_transpose = i
         else:
             break
-    for j in range(1, 9):
+    for j in range(1, 4):  # 最大3列，限制为3x3
         centerBlockWidth_temp = input_height * j + PHOTO_INTERVAL_W * (j - 1)
         if centerBlockWidth_temp < LIMIT_BLOCK_W:
             centerBlockWidth_2 = centerBlockWidth_temp
@@ -77,9 +77,9 @@ def judge_layout(
 
 def generate_layout_array(input_height, input_width, LAYOUT_WIDTH=1795, LAYOUT_HEIGHT=1205):
     # 1.基础参数表
-    PHOTO_INTERVAL_H = 30  # 证件照与证件照之间的垂直距离
-    PHOTO_INTERVAL_W = 30  # 证件照与证件照之间的水平距离
-    SIDES_INTERVAL_H = 50  # 证件照与画布边缘的垂直距离
+    PHOTO_INTERVAL_H = 0  # 证件照与证件照之间的垂直距离
+    PHOTO_INTERVAL_W = 0  # 证件照与证件照之间的水平距离
+    SIDES_INTERVAL_H = 70  # 证件照与画布边缘的垂直距离
     SIDES_INTERVAL_W = 70  # 证件照与画布边缘的水平距离
     LIMIT_BLOCK_W = LAYOUT_WIDTH - 2 * SIDES_INTERVAL_W
     LIMIT_BLOCK_H = LAYOUT_HEIGHT - 2 * SIDES_INTERVAL_H
@@ -146,33 +146,76 @@ def generate_layout_image(
         )
 
     if crop_line:
-        # 添加裁剪线
-        line_color = (200, 200, 200)  # 浅灰色
+        # 添加裁剪线（只在照片外围显示）
+        line_color = (100, 100, 100)  # 深灰色
         line_thickness = 1
 
-        # 初始化裁剪线位置列表
-        vertical_lines = []
-        horizontal_lines = []
-
-        # 根据排版数组添加裁剪线
+        # 收集所有照片的位置信息
+        photo_positions = []
         for arr in typography_arr:
             x, y = arr[0], arr[1]
-            if x not in vertical_lines:
-                vertical_lines.append(x)
-            if x + width not in vertical_lines:
-                vertical_lines.append(x + width)
-            if y not in horizontal_lines:
-                horizontal_lines.append(y)
-            if y + height not in horizontal_lines:
-                horizontal_lines.append(y + height)
+            photo_positions.append((x, y, x + width, y + height))
 
-        # 绘制垂直裁剪线
-        for x in vertical_lines:
-            cv2.line(white_background, (x, 0), (x, LAYOUT_HEIGHT), line_color, line_thickness)
+        # 获取所有垂直和水平边界线
+        vertical_lines = set()
+        horizontal_lines = set()
+        for x, y, x2, y2 in photo_positions:
+            vertical_lines.add(x)
+            vertical_lines.add(x2)
+            horizontal_lines.add(y)
+            horizontal_lines.add(y2)
 
-        # 绘制水平裁剪线
-        for y in horizontal_lines:
-            cv2.line(white_background, (0, y), (LAYOUT_WIDTH, y), line_color, line_thickness)
+        # 绘制垂直裁剪线（避开照片内部）
+        for x in sorted(vertical_lines):
+            # 找到该垂直线上被照片占用的区间
+            occupied_ranges = []
+            for px, py, px2, py2 in photo_positions:
+                if px <= x <= px2:
+                    occupied_ranges.append((py, py2))
+            
+            # 合并重叠区间
+            occupied_ranges.sort()
+            merged_ranges = []
+            for start, end in occupied_ranges:
+                if merged_ranges and start <= merged_ranges[-1][1]:
+                    merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], end))
+                else:
+                    merged_ranges.append((start, end))
+            
+            # 绘制非占用区域的线段
+            current_y = 0
+            for start, end in merged_ranges:
+                if current_y < start:
+                    cv2.line(white_background, (x, current_y), (x, start), line_color, line_thickness)
+                current_y = end
+            if current_y < LAYOUT_HEIGHT:
+                cv2.line(white_background, (x, current_y), (x, LAYOUT_HEIGHT), line_color, line_thickness)
+
+        # 绘制水平裁剪线（避开照片内部）
+        for y in sorted(horizontal_lines):
+            # 找到该水平线上被照片占用的区间
+            occupied_ranges = []
+            for px, py, px2, py2 in photo_positions:
+                if py <= y <= py2:
+                    occupied_ranges.append((px, px2))
+            
+            # 合并重叠区间
+            occupied_ranges.sort()
+            merged_ranges = []
+            for start, end in occupied_ranges:
+                if merged_ranges and start <= merged_ranges[-1][1]:
+                    merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], end))
+                else:
+                    merged_ranges.append((start, end))
+            
+            # 绘制非占用区域的线段
+            current_x = 0
+            for start, end in merged_ranges:
+                if current_x < start:
+                    cv2.line(white_background, (current_x, y), (start, y), line_color, line_thickness)
+                current_x = end
+            if current_x < LAYOUT_WIDTH:
+                cv2.line(white_background, (current_x, y), (LAYOUT_WIDTH, y), line_color, line_thickness)
 
     # 返回排版后的图像
     return white_background

@@ -32,6 +32,7 @@ WEIGHTS = {
         "mnn_hivision_modnet.mnn",
     ),
     "rmbg-1.4": os.path.join(os.path.dirname(__file__), "weights", "rmbg-1.4.onnx"),
+    "rmbg-2.0": os.path.join(os.path.dirname(__file__), "weights", "rmbg-2.0.onnx"),
     "birefnet-v1-lite": os.path.join(
         os.path.dirname(__file__), "weights", "birefnet-v1-lite.onnx"
     ),
@@ -39,12 +40,14 @@ WEIGHTS = {
 
 ONNX_DEVICE = onnxruntime.get_device()
 ONNX_PROVIDER = (
-    "CUDAExecutionProvider" if ONNX_DEVICE == "GPU" else "CPUExecutionProvider"
+    "CUDAExecutionProvider" if ONNX_DEVICE == "GPU" and "CUDAExecutionProvider" in onnxruntime.get_available_providers() else "CPUExecutionProvider"
 )
+print(f"ONNX Device: {ONNX_DEVICE}, Provider: {ONNX_PROVIDER}, Available providers: {onnxruntime.get_available_providers()}")
 
 HIVISION_MODNET_SESS = None
 MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
 RMBG_SESS = None
+RMBG_2_SESS = None
 BIREFNET_V1_LITE_SESS = None
 
 
@@ -62,14 +65,16 @@ def load_onnx_model(checkpoint_path, set_cpu=False):
     else:
         try:
             sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
+            print(f"Model {os.path.basename(checkpoint_path)} loaded with providers: {sess.get_providers()}")
         except Exception as e:
-            if ONNX_DEVICE == "CUDAExecutionProvider":
+            if ONNX_PROVIDER == "CUDAExecutionProvider":  # 修复：使用ONNX_PROVIDER而不是ONNX_DEVICE
                 print(f"Failed to load model with CUDAExecutionProvider: {e}")
                 print("Falling back to CPUExecutionProvider")
                 # 尝试使用CPU加载模型
                 sess = onnxruntime.InferenceSession(
                     checkpoint_path, providers=["CPUExecutionProvider"]
                 )
+                print(f"Model {os.path.basename(checkpoint_path)} loaded with providers: {sess.get_providers()}")
             else:
                 raise e  # 如果是CPU执行失败，重新抛出异常
 
@@ -83,6 +88,8 @@ def extract_human(ctx: Context):
     """
     # 抠图
     matting_image = get_modnet_matting(ctx.processing_image, WEIGHTS["hivision_modnet"])
+    if matting_image is None:
+        raise RuntimeError("HivisionIDPhotos ModNet 模型加载失败或模型文件不存在，请检查模型文件路径")
     # 修复抠图
     ctx.processing_image = hollow_out_fix(matting_image)
     ctx.matting_image = ctx.processing_image.copy()
@@ -97,6 +104,8 @@ def extract_human_modnet_photographic_portrait_matting(ctx: Context):
     matting_image = get_modnet_matting_photographic_portrait_matting(
         ctx.processing_image, WEIGHTS["modnet_photographic_portrait_matting"]
     )
+    if matting_image is None:
+        raise RuntimeError("ModNet Photographic Portrait 模型加载失败或模型文件不存在，请检查模型文件路径")
     # 修复抠图
     ctx.processing_image = matting_image
     ctx.matting_image = ctx.processing_image.copy()
@@ -106,12 +115,29 @@ def extract_human_mnn_modnet(ctx: Context):
     matting_image = get_mnn_modnet_matting(
         ctx.processing_image, WEIGHTS["mnn_hivision_modnet"]
     )
+    if matting_image is None:
+        raise RuntimeError("MNN ModNet 模型加载失败或模型文件不存在，请检查模型文件路径")
     ctx.processing_image = hollow_out_fix(matting_image)
     ctx.matting_image = ctx.processing_image.copy()
 
 
 def extract_human_rmbg(ctx: Context):
     matting_image = get_rmbg_matting(ctx.processing_image, WEIGHTS["rmbg-1.4"])
+    if matting_image is None:
+        raise RuntimeError("RMBG 1.4 模型加载失败或模型文件不存在，请检查模型文件路径")
+    ctx.processing_image = matting_image
+    ctx.matting_image = ctx.processing_image.copy()
+
+
+def extract_human_rmbg_2(ctx: Context):
+    # 获取抠图参数
+    sensitivity = getattr(ctx, 'matting_sensitivity', 0.95)
+    resolution = getattr(ctx, 'matting_resolution', 1024)
+    
+    matting_image = get_rmbg_2_matting(ctx.processing_image, WEIGHTS["rmbg-2.0"], 
+                                      ref_size=resolution, sensitivity=sensitivity)
+    if matting_image is None:
+        raise RuntimeError("RMBG 2.0 模型加载失败或模型文件不存在，请检查模型文件路径")
     ctx.processing_image = matting_image
     ctx.matting_image = ctx.processing_image.copy()
 
@@ -128,6 +154,8 @@ def extract_human_birefnet_lite(ctx: Context):
     matting_image = get_birefnet_portrait_matting(
         ctx.processing_image, WEIGHTS["birefnet-v1-lite"]
     )
+    if matting_image is None:
+        raise RuntimeError("BiRefNet Lite 模型加载失败或模型文件不存在，请检查模型文件路径")
     ctx.processing_image = matting_image
     ctx.matting_image = ctx.processing_image.copy()
 
@@ -203,7 +231,7 @@ def get_modnet_matting(input_image, checkpoint_path, ref_size=512):
 
     # 如果RUN_MODE不是野兽模式，则不加载模型
     if HIVISION_MODNET_SESS is None:
-        HIVISION_MODNET_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
+        HIVISION_MODNET_SESS = load_onnx_model(checkpoint_path)
 
     input_name = HIVISION_MODNET_SESS.get_inputs()[0].name
     output_name = HIVISION_MODNET_SESS.get_outputs()[0].name
@@ -237,7 +265,7 @@ def get_modnet_matting_photographic_portrait_matting(
     # 如果RUN_MODE不是野兽模式，则不加载模型
     if MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS is None:
         MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = load_onnx_model(
-            checkpoint_path, set_cpu=True
+            checkpoint_path
         )
 
     input_name = MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS.get_inputs()[0].name
@@ -276,7 +304,7 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
         return image
 
     if RMBG_SESS is None:
-        RMBG_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
+        RMBG_SESS = load_onnx_model(checkpoint_path)
 
     orig_image = Image.fromarray(input_image)
     image = resize_rmbg_image(orig_image)
@@ -295,14 +323,15 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
     mi = np.min(result)
     result = (result - mi) / (ma - mi)  # Normalize to [0, 1]
 
-    # Convert to PIL image
+    # Convert to PIL image with enhanced edge processing
     im_array = (result * 255).astype(np.uint8)
     pil_im = Image.fromarray(
         im_array, mode="L"
     )  # Ensure mask is single channel (L mode)
 
     # Resize the mask to match the original image size
-    pil_im = pil_im.resize(orig_image.size, Image.BILINEAR)
+    # 使用LANCZOS插值以获得更好的边缘质量，特别是对细微发丝
+    pil_im = pil_im.resize(orig_image.size, Image.LANCZOS)
 
     # Paste the mask on the original image
     new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
@@ -311,6 +340,108 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
         RMBG_SESS = None
+
+    return np.array(new_im)
+
+
+def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, sensitivity=0.95):
+    """
+    RMBG 2.0 抠图处理函数
+    基于BiRefNet架构，使用不同的预处理参数
+    """
+    global RMBG_2_SESS
+
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint file not found: {checkpoint_path}")
+        return None
+
+    def resize_rmbg_2_image(image):
+        image = image.convert("RGB")
+        model_input_size = (ref_size, ref_size)
+        image = image.resize(model_input_size, Image.BILINEAR)
+        return image
+
+    # 记录加载onnx模型的开始时间
+    load_start_time = time()
+
+    # 如果RUN_MODE不是野兽模式，则不加载模型
+    if RMBG_2_SESS is None:
+        # print("首次加载rmbg-2.0模型...")
+        if ONNX_DEVICE == "GPU":
+            print("onnxruntime-gpu已安装，尝试使用CUDA加载RMBG 2.0模型")
+            try:
+                import torch
+            except ImportError:
+                print(
+                    "torch未安装，尝试直接使用onnxruntime-gpu加载模型，这需要配置好CUDA和cuDNN"
+                )
+            RMBG_2_SESS = load_onnx_model(checkpoint_path)
+        else:
+            RMBG_2_SESS = load_onnx_model(checkpoint_path)
+
+    # 记录加载onnx模型的结束时间
+    load_end_time = time()
+
+    # 打印加载onnx模型所花的时间
+    print(f"Loading RMBG 2.0 ONNX model took {load_end_time - load_start_time:.4f} seconds")
+
+    orig_image = Image.fromarray(input_image)
+    image = resize_rmbg_2_image(orig_image)
+    
+    # RMBG 2.0 使用标准的ImageNet预处理参数
+    im_np = np.array(image).astype(np.float32)
+    im_np = im_np.transpose(2, 0, 1)  # Change to CxHxW format
+    im_np = np.expand_dims(im_np, axis=0)  # Add batch dimension
+    im_np = im_np / 255.0  # Normalize to [0, 1]
+    
+    # 使用ImageNet标准化参数 (与BiRefNet架构一致)
+    mean = np.array([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
+    im_np = (im_np - mean) / std
+
+    input_name = RMBG_2_SESS.get_inputs()[0].name
+    print(onnxruntime.get_device(), RMBG_2_SESS.get_providers())
+
+    time_st = time()
+    # Inference
+    result = RMBG_2_SESS.run(None, {input_name: im_np.astype(np.float32)})[0]
+    print(f"RMBG 2.0 Inference time: {time() - time_st:.4f} seconds")
+
+    # Post process - RMBG 2.0 后处理
+    result = np.squeeze(result)
+    
+    # 检查输出范围，如果在[-inf, inf]范围内则需要sigmoid，如果在[0,1]则已经过sigmoid
+    if np.min(result) < 0 or np.max(result) > 1:
+        # 应用sigmoid函数（模型输出未经过sigmoid）
+        result = 1 / (1 + np.exp(-result))  # Sigmoid function
+    
+    # 应用敏感度调整 - 改善细微发丝处理
+    # 敏感度越高，保留更多细节；敏感度越低，更加平滑
+    if sensitivity != 1.0:
+        # 使用幂函数调整敏感度，保持细微发丝的细节
+        gamma = 2.0 - sensitivity  # sensitivity=0.95时，gamma=1.05；sensitivity=0.1时，gamma=1.9
+        result = np.power(result, gamma)
+    
+    # 确保结果在[0,1]范围内
+    result = np.clip(result, 0, 1)
+
+    # Convert to PIL image with enhanced edge processing
+    im_array = (result * 255).astype(np.uint8)
+    pil_im = Image.fromarray(
+        im_array, mode="L"
+    )  # Ensure mask is single channel (L mode)
+
+    # Resize the mask to match the original image size
+    # 使用LANCZOS插值以获得更好的边缘质量，特别是对细微发丝
+    pil_im = pil_im.resize(orig_image.size, Image.LANCZOS)
+
+    # Paste the mask on the original image
+    new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
+    new_im.paste(orig_image, mask=pil_im)
+    
+    # 如果RUN_MODE不是野兽模式，则释放模型
+    if os.getenv("RUN_MODE") != "beast":
+        RMBG_2_SESS = None
 
     return np.array(new_im)
 
@@ -389,7 +520,7 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
                 )
             BIREFNET_V1_LITE_SESS = load_onnx_model(checkpoint_path)
         else:
-            BIREFNET_V1_LITE_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
+            BIREFNET_V1_LITE_SESS = load_onnx_model(checkpoint_path)
 
     # 记录加载onnx模型的结束时间
     load_end_time = time()
