@@ -1,7 +1,7 @@
 import argparse
 import os
 
-# 预加载 PyTorch 和 cuDNN（在所有其他导入之前）
+# 预加�?PyTorch �?cuDNN（在所有其他导入之前）
 import torch
 import onnxruntime as ort
 
@@ -11,22 +11,22 @@ from hivision.creator.choose_handler import HUMAN_MATTING_MODELS
 
 root_dir = os.path.dirname(os.path.abspath(__file__))
 
-# 获取存在的人像分割模型列表
-# 通过检查 hivision/creator/weights 目录下的 .onnx 和 .mnn 文件
+# 获取存在的人像分割模型列�?
+# 通过检�?hivision/creator/weights 目录下的 .onnx �?.mnn 文件
 # 只保留文件名（不包括扩展名）
 HUMAN_MATTING_MODELS_EXIST = [
     os.path.splitext(file)[0]
     for file in os.listdir(os.path.join(root_dir, "hivision/creator/weights"))
     if file.endswith(".onnx") or file.endswith(".mnn")
 ]
-# 在HUMAN_MATTING_MODELS中的模型才会被加载到Gradio中显示
+# 在HUMAN_MATTING_MODELS中的模型才会被加载到Gradio中显�?
 HUMAN_MATTING_MODELS_CHOICE = [
     model for model in HUMAN_MATTING_MODELS if model in HUMAN_MATTING_MODELS_EXIST
 ]
 
 if len(HUMAN_MATTING_MODELS_CHOICE) == 0:
     raise ValueError(
-        "未找到任何存在的人像分割模型，请检查 hivision/creator/weights 目录下的文件"
+        "未找到任何存在的人像分割模型，请检�?hivision/creator/weights 目录下的文件"
         + "\n"
         + "No existing portrait segmentation model was found, please check the files in the hivision/creator/weights directory."
     )
@@ -46,6 +46,7 @@ FACE_DETECT_MODELS_CHOICE = FACE_DETECT_MODELS + FACE_DETECT_MODELS_EXPAND
 LANGUAGE = ["zh", "en", "ko", "ja"]
 
 if __name__ == "__main__":
+    os.environ["RUN_MODE"] = "beast"
     argparser = argparse.ArgumentParser()
     argparser.add_argument(
         "--port", type=int, default=7860, help="The port number of the server"
@@ -71,7 +72,7 @@ if __name__ == "__main__":
         LANGUAGE,
     )
     
-    # 如果RUN_MODE是Beast，打印已开启野兽模式
+    # 如果RUN_MODE是Beast，打印已开启野兽模�?
     if os.getenv("RUN_MODE") == "beast":
         print("[Beast mode activated.] 已开启野兽模式。")
 

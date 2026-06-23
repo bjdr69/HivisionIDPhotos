@@ -44,6 +44,30 @@ ONNX_PROVIDER = (
 )
 print(f"ONNX Device: {ONNX_DEVICE}, Provider: {ONNX_PROVIDER}, Available providers: {onnxruntime.get_available_providers()}")
 
+# GPU idle timeout: release unused GPU model memory after inactivity
+_LAST_GPU_USE = {}
+IDLE_TIMEOUT = 300  # 5 minutes
+
+def _check_gpu_idle(model_key):
+    """Check if GPU model has been idle too long; release if so."""
+    global RMBG_SESS, RMBG_2_SESS, BIREFNET_V1_LITE_SESS
+    now = time()
+    last = _LAST_GPU_USE.get(model_key, 0)
+    if last > 0 and (now - last) > IDLE_TIMEOUT:
+        if model_key == "rmbg" and RMBG_SESS is not None:
+            print(f"[GPU Idle] Releasing rmbg model after {(now - last):.0f}s idle")
+            RMBG_SESS = None
+        elif model_key == "rmbg2" and RMBG_2_SESS is not None:
+            print(f"[GPU Idle] Releasing rmbg2 model after {(now - last):.0f}s idle")
+            RMBG_2_SESS = None
+        elif model_key == "birefnet" and BIREFNET_V1_LITE_SESS is not None:
+            print(f"[GPU Idle] Releasing birefnet model after {(now - last):.0f}s idle")
+            BIREFNET_V1_LITE_SESS = None
+
+def _record_gpu_use(model_key):
+    """Update last-use timestamp for a GPU model."""
+    _LAST_GPU_USE[model_key] = time()
+
 HIVISION_MODNET_SESS = None
 MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
 RMBG_SESS = None
@@ -52,6 +76,12 @@ BIREFNET_V1_LITE_SESS = None
 
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
+    # Small model optimization: models under 50MB run faster on CPU than GPU
+    if not set_cpu and os.path.exists(checkpoint_path):
+        model_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
+        if model_size_mb < 50:
+            print(f"Model {os.path.basename(checkpoint_path)} is {model_size_mb:.1f}MB (<50MB), using CPU for better performance")
+            set_cpu = True
     providers = (
         ["CUDAExecutionProvider", "CPUExecutionProvider"]
         if ONNX_PROVIDER == "CUDAExecutionProvider"
@@ -303,6 +333,7 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
         image = image.resize(model_input_size, Image.BILINEAR)
         return image
 
+    _check_gpu_idle("rmbg")
     if RMBG_SESS is None:
         RMBG_SESS = load_onnx_model(checkpoint_path)
 
@@ -314,8 +345,16 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
     im_np = im_np / 255.0  # Normalize to [0, 1]
     im_np = (im_np - 0.5) / 0.5  # Normalize to [-1, 1]
 
-    # Inference
-    result = RMBG_SESS.run(None, {RMBG_SESS.get_inputs()[0].name: im_np})[0]
+    # Inference with I/O binding for GPU (avoids per-call memory allocation overhead)
+    if "CUDAExecutionProvider" in RMBG_SESS.get_providers():
+        io_binding = RMBG_SESS.io_binding()
+        input_ort = onnxruntime.OrtValue.ortvalue_from_numpy(im_np, 'cuda', 0)
+        io_binding.bind_ortvalue_input(RMBG_SESS.get_inputs()[0].name, input_ort)
+        io_binding.bind_output(RMBG_SESS.get_outputs()[0].name, 'cuda')
+        RMBG_SESS.run_with_iobinding(io_binding)
+        result = io_binding.get_outputs()[0].numpy()
+    else:
+        result = RMBG_SESS.run(None, {RMBG_SESS.get_inputs()[0].name: im_np})[0]
 
     # Post process
     result = np.squeeze(result)
@@ -340,6 +379,8 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
         RMBG_SESS = None
+    else:
+        _record_gpu_use("rmbg")
 
     return np.array(new_im)
 
@@ -365,6 +406,7 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     load_start_time = time()
 
     # 如果RUN_MODE不是野兽模式，则不加载模型
+    _check_gpu_idle("rmbg2")
     if RMBG_2_SESS is None:
         # print("首次加载rmbg-2.0模型...")
         if ONNX_DEVICE == "GPU":
@@ -403,7 +445,7 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     print(onnxruntime.get_device(), RMBG_2_SESS.get_providers())
 
     time_st = time()
-    # Inference
+    # RMBG 2.0 has dynamic internal shapes, use standard run() instead of IO binding
     result = RMBG_2_SESS.run(None, {input_name: im_np.astype(np.float32)})[0]
     print(f"RMBG 2.0 Inference time: {time() - time_st:.4f} seconds")
 
@@ -442,6 +484,8 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
         RMBG_2_SESS = None
+    else:
+        _record_gpu_use("rmbg2")
 
     return np.array(new_im)
 
@@ -508,6 +552,7 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     load_start_time = time()
 
     # 如果RUN_MODE不是野兽模式，则不加载模型
+    _check_gpu_idle("birefnet")
     if BIREFNET_V1_LITE_SESS is None:
         # print("首次加载birefnet-v1-lite模型...")
         if ONNX_DEVICE == "GPU":
@@ -532,9 +577,16 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     print(onnxruntime.get_device(), BIREFNET_V1_LITE_SESS.get_providers())
 
     time_st = time()
-    pred_onnx = BIREFNET_V1_LITE_SESS.run(None, {input_name: input_images})[
-        -1
-    ]  # Use float32 input
+    # Inference with I/O binding for GPU
+    if "CUDAExecutionProvider" in BIREFNET_V1_LITE_SESS.get_providers():
+        io_binding = BIREFNET_V1_LITE_SESS.io_binding()
+        input_ort = onnxruntime.OrtValue.ortvalue_from_numpy(input_images, 'cuda', 0)
+        io_binding.bind_ortvalue_input(input_name, input_ort)
+        io_binding.bind_output(BIREFNET_V1_LITE_SESS.get_outputs()[0].name, 'cuda')
+        BIREFNET_V1_LITE_SESS.run_with_iobinding(io_binding)
+        pred_onnx = io_binding.get_outputs()[0].numpy()
+    else:
+        pred_onnx = BIREFNET_V1_LITE_SESS.run(None, {input_name: input_images})[-1]
     pred_onnx = np.squeeze(pred_onnx)  # Use numpy to squeeze
     result = 1 / (1 + np.exp(-pred_onnx))  # Sigmoid function using numpy
     print(f"Inference time: {time() - time_st:.4f} seconds")
@@ -555,5 +607,7 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
         BIREFNET_V1_LITE_SESS = None
+    else:
+        _record_gpu_use("birefnet")
 
     return np.array(new_im)

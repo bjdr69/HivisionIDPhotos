@@ -29,7 +29,7 @@ class Watermarker(object):
         style: WatermarkerStyles,
         angle=30,
         color="#8B8B1B",
-        font_file="青鸟华光简琥珀.ttf",
+        font_file="yusei魔法手写体.ttf",
         opacity=0.15,
         size=50,
         space=75,

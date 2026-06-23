@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import os
 import onnxruntime
 from hivision.creator.retinaface.box_utils import decode, decode_landm
 from hivision.creator.retinaface.prior_box import PriorBox
@@ -53,6 +54,12 @@ ONNX_PROVIDER = (
 
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
+    # Small model optimization: models under 50MB run faster on CPU than GPU
+    if not set_cpu and os.path.exists(checkpoint_path):
+        model_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
+        if model_size_mb < 50:
+            print(f"RetinaFace model {os.path.basename(checkpoint_path)} is {model_size_mb:.1f}MB (<50MB), using CPU for better performance")
+            set_cpu = True
     providers = (
         ["CUDAExecutionProvider", "CPUExecutionProvider"]
         if ONNX_PROVIDER == "CUDAExecutionProvider"

@@ -350,6 +350,13 @@ def add_background_with_image(input_image: np.ndarray, background_image: np.ndar
 def add_watermark(
     image, text, size=50, opacity=0.5, angle=45, color="#8B8B1B", space=75
 ):
+    # Convert Gradio ColorPicker rgba(r,g,b,a) format to hex if needed
+    import re
+    if isinstance(color, str) and color.startswith("rgba"):
+        match = re.match(r"rgba\(([\d.]+),\s*([\d.]+),\s*([\d.]+)", color)
+        if match:
+            r, g, b = int(float(match.group(1))), int(float(match.group(2))), int(float(match.group(3)))
+            color = f"#{r:02x}{g:02x}{b:02x}"
     image = Image.fromarray(image)
     watermarker = Watermarker(
         input_image=image,
