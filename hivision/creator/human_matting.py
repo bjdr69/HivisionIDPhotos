@@ -93,6 +93,68 @@ def _make_session_options():
 _LAST_GPU_USE = {}
 IDLE_TIMEOUT = 120  # 2 minutes
 _IDLE_TIMER_RUNNING = False
+# If GPU memory usage exceeds this ratio, release models immediately
+# even if idle timeout hasn't been reached.  This allows other GPU
+# applications (e.g., Stable Diffusion, LLM inference) to claim VRAM.
+VRAM_PRESSURE_THRESHOLD = 0.80
+
+
+def _get_gpu_memory_usage():
+    """Return (used_bytes, total_bytes) for the first CUDA device, or (0, 0) if unavailable.
+
+    Prefers nvidia-smi (reports ALL processes' VRAM) over PyTorch
+    (only reports PyTorch's own allocations).  For VRAM pressure
+    detection we need the global picture, not just one framework's view.
+    """
+    # Primary: nvidia-smi — sees VRAM from ORT, PyTorch, and all other processes
+    try:
+        import subprocess
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+             "--format=csv,nounits,noheader"],
+            timeout=5,
+        ).decode("utf-8").strip()
+        # First GPU line: "1234, 8192"
+        parts = output.split("\n")[0].split(",")
+        used = int(parts[0].strip()) * 1024 * 1024   # MiB → bytes
+        total = int(parts[1].strip()) * 1024 * 1024
+        if total > 0:
+            return used, total
+    except Exception:
+        pass
+
+    # Fallback: PyTorch — only sees PyTorch's own allocations,
+    # but still useful as a lower-bound signal
+    try:
+        import torch
+        if torch.cuda.is_available():
+            used = torch.cuda.memory_allocated(0)
+            total = torch.cuda.get_device_properties(0).total_mem
+            if total > 0:
+                return used, total
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+    return 0, 0
+
+
+def _is_vram_pressure():
+    """Check if GPU VRAM usage exceeds the pressure threshold.
+
+    Returns True when another process is consuming significant VRAM,
+    signalling that our idle models should be released early.
+    """
+    used, total = _get_gpu_memory_usage()
+    if total == 0:
+        return False
+    ratio = used / total
+    if ratio > VRAM_PRESSURE_THRESHOLD:
+        print(f"[VRAM Pressure] GPU memory usage {ratio:.1%} exceeds "
+              f"threshold {VRAM_PRESSURE_THRESHOLD:.0%}, releasing idle models")
+        return True
+    return False
 
 
 def _release_session(session):
@@ -130,30 +192,44 @@ def _release_session(session):
 
 
 def _check_gpu_idle(model_key):
-    """Check if GPU model has been idle too long; release if so."""
+    """Check if GPU model should be released.
+
+    Releases when EITHER condition is true:
+      1. Model has been idle longer than IDLE_TIMEOUT
+      2. VRAM pressure is high (another app needs GPU memory)
+    """
     global RMBG_SESS, RMBG_2_SESS, BIREFNET_V1_LITE_SESS
     now = time()
     last = _LAST_GPU_USE.get(model_key, 0)
-    if last > 0 and (now - last) > IDLE_TIMEOUT:
-        if model_key == "rmbg" and RMBG_SESS is not None:
-            print(f"[GPU Idle] Releasing rmbg model after {(now - last):.0f}s idle")
-            sess = RMBG_SESS
-            RMBG_SESS = None
-            _release_session(sess)
-        elif model_key == "rmbg2" and RMBG_2_SESS is not None:
-            print(f"[GPU Idle] Releasing rmbg2 model after {(now - last):.0f}s idle")
-            sess = RMBG_2_SESS
-            RMBG_2_SESS = None
-            _release_session(sess)
-        elif model_key == "birefnet" and BIREFNET_V1_LITE_SESS is not None:
-            print(f"[GPU Idle] Releasing birefnet model after {(now - last):.0f}s idle")
-            sess = BIREFNET_V1_LITE_SESS
-            BIREFNET_V1_LITE_SESS = None
-            _release_session(sess)
+    idle_too_long = last > 0 and (now - last) > IDLE_TIMEOUT
+    vram_pressure = _is_vram_pressure()
+
+    if not idle_too_long and not vram_pressure:
+        return
+
+    reason = "idle timeout" if idle_too_long else "VRAM pressure"
+    if model_key == "rmbg" and RMBG_SESS is not None:
+        print(f"[GPU Release] Releasing rmbg model ({reason}, "
+              f"idle={(now - last):.0f}s)")
+        sess = RMBG_SESS
+        RMBG_SESS = None
+        _release_session(sess)
+    elif model_key == "rmbg2" and RMBG_2_SESS is not None:
+        print(f"[GPU Release] Releasing rmbg2 model ({reason}, "
+              f"idle={(now - last):.0f}s)")
+        sess = RMBG_2_SESS
+        RMBG_2_SESS = None
+        _release_session(sess)
+    elif model_key == "birefnet" and BIREFNET_V1_LITE_SESS is not None:
+        print(f"[GPU Release] Releasing birefnet model ({reason}, "
+              f"idle={(now - last):.0f}s)")
+        sess = BIREFNET_V1_LITE_SESS
+        BIREFNET_V1_LITE_SESS = None
+        _release_session(sess)
 
 
 def _check_all_gpu_idle():
-    """Check all GPU models for idle timeout; called by background timer."""
+    """Check all GPU models for idle timeout or VRAM pressure; called by background timer."""
     global _IDLE_TIMER_RUNNING
     for key in ["rmbg", "rmbg2", "birefnet"]:
         _check_gpu_idle(key)
@@ -161,7 +237,7 @@ def _check_all_gpu_idle():
     if RMBG_SESS is None and RMBG_2_SESS is None and BIREFNET_V1_LITE_SESS is None:
         _IDLE_TIMER_RUNNING = False
         return
-    # Still have loaded models — schedule next check at the earliest expiry
+    # Still have loaded models — schedule next check
     now = time()
     remaining = []
     for key in ["rmbg", "rmbg2", "birefnet"]:
@@ -170,7 +246,12 @@ def _check_all_gpu_idle():
             secs_until_expiry = IDLE_TIMEOUT - (now - last)
             remaining.append(max(secs_until_expiry, 10))
     if remaining:
-        wait = min(remaining) + 5  # check 5s after earliest expiry
+        # Under VRAM pressure, check more frequently (every 15s)
+        # to release models as soon as they become idle
+        if _is_vram_pressure():
+            wait = min(15, min(remaining) + 2)
+        else:
+            wait = min(remaining) + 5  # check 5s after earliest expiry
         _schedule_idle_check(wait)
 
 
@@ -190,7 +271,12 @@ def _record_gpu_use(model_key):
     _LAST_GPU_USE[model_key] = time()
     if not _IDLE_TIMER_RUNNING:
         _IDLE_TIMER_RUNNING = True
-        _schedule_idle_check(IDLE_TIMEOUT + 5)
+        # Under VRAM pressure, start checking every 15s instead of
+        # waiting for the full IDLE_TIMEOUT
+        if _is_vram_pressure():
+            _schedule_idle_check(15)
+        else:
+            _schedule_idle_check(IDLE_TIMEOUT + 5)
 
 # ─── GPU model whitelist: only these models use GPU, all others use CPU ───
 # RMBG-2.0 and BiRefNet-v1-lite benefit significantly from GPU acceleration.
