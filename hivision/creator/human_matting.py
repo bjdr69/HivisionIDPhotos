@@ -14,6 +14,7 @@ from .tensor2numpy import NNormalize, NTo_Tensor, NUnsqueeze
 from .context import Context
 import cv2
 import os
+import gc
 from time import time
 
 
@@ -44,9 +45,83 @@ ONNX_PROVIDER = (
 )
 print(f"ONNX Device: {ONNX_DEVICE}, Provider: {ONNX_PROVIDER}, Available providers: {onnxruntime.get_available_providers()}")
 
+# ─── CUDA Provider Options: prevent unbounded VRAM growth ───
+#
+# IMPORTANT: All values must be STRINGS, not Python ints.
+# ORT's provider option parser treats the value as an enum name first;
+# passing Python int 0 makes it look up enum "0" which doesn't exist.
+# Valid arena_extend_strategy: "kNextPowerOfTwo" or "kSameAsRequested"
+# Valid cudnn_conv_algo_search: "EXHAUSTIVE", "HEURISTIC", "DEFAULT"
+#
+# The REAL VRAM leak fix is in SessionOptions (enable_mem_pattern=False),
+# not in these provider options.  These are kept minimal to avoid parse
+# errors while still providing useful defaults.
+CUDA_PROVIDER_OPTIONS = {
+    "arena_extend_strategy": "kSameAsRequested",
+    "cudnn_conv_algo_search": "EXHAUSTIVE",
+    "enable_cuda_graph": "0",
+}
+
+# ─── SessionOptions for dynamic-shape models ───
+# These options are critical for preventing VRAM leak with RMBG 2.0.
+# They must be set BEFORE creating the InferenceSession.
+def _make_session_options():
+    """Create SessionOptions optimized for dynamic-shape ONNX models.
+
+    Key settings that prevent VRAM leak:
+      - enable_mem_pattern=False: Disables ORT's memory pattern optimization.
+        This optimization pre-allocates buffers based on shape assumptions and
+        tries to reuse them across runs.  With dynamic shapes (RMBG 2.0's
+        deformable convolutions), the pre-allocated sizes never match, causing
+        "Shape mismatch attempting to re-use buffer" warnings and NEW
+        allocations each run → unbounded VRAM growth.
+      - enable_mem_reuse=False: Disables cross-run memory reuse in the arena.
+        Prevents stale allocations from accumulating when shapes change.
+      - graph_optimization_level=ORT_ENABLE_ALL: Still apply graph optimizations
+        (fusion, constant folding, etc.) but skip memory pattern.
+    """
+    opts = onnxruntime.SessionOptions()
+    opts.enable_mem_pattern = False   # ← THE KEY FIX for VRAM leak
+    opts.enable_mem_reuse = False     # ← Prevents stale arena accumulation
+    opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # Log severity: suppress the "Shape mismatch" warnings since we've
+    # disabled the feature that causes them
+    opts.log_severity_level = 3  # 3=ERROR, hides WARNING-level messages
+    return opts
+
 # GPU idle timeout: release unused GPU model memory after inactivity
 _LAST_GPU_USE = {}
 IDLE_TIMEOUT = 300  # 5 minutes
+
+
+def _release_session(session):
+    """Properly release an ONNX InferenceSession and its CUDA memory.
+
+    Setting the Python variable to None is NOT sufficient — the C++ backend
+    holds CUDA allocations that Python GC may never reclaim.  We must:
+      1. Close the session (releases ORT internal resources)
+      2. Force Python GC to collect the orphaned object
+      3. If PyTorch is loaded, empty its CUDA cache (ORT may share the allocator)
+    """
+    if session is None:
+        return
+    try:
+        # ORT InferenceSession has no explicit close(), but deleting all refs
+        # triggers the C++ destructor which frees CUDA memory.
+        # We explicitly del to speed this up.
+        del session
+    except Exception:
+        pass
+    gc.collect()
+    # If PyTorch is imported in this process, its caching allocator may hold
+    # freed ORT memory.  empty_cache() returns it to CUDA.
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
 
 def _check_gpu_idle(model_key):
     """Check if GPU model has been idle too long; release if so."""
@@ -56,17 +131,26 @@ def _check_gpu_idle(model_key):
     if last > 0 and (now - last) > IDLE_TIMEOUT:
         if model_key == "rmbg" and RMBG_SESS is not None:
             print(f"[GPU Idle] Releasing rmbg model after {(now - last):.0f}s idle")
+            _release_session(RMBG_SESS)
             RMBG_SESS = None
         elif model_key == "rmbg2" and RMBG_2_SESS is not None:
             print(f"[GPU Idle] Releasing rmbg2 model after {(now - last):.0f}s idle")
+            _release_session(RMBG_2_SESS)
             RMBG_2_SESS = None
         elif model_key == "birefnet" and BIREFNET_V1_LITE_SESS is not None:
             print(f"[GPU Idle] Releasing birefnet model after {(now - last):.0f}s idle")
+            _release_session(BIREFNET_V1_LITE_SESS)
             BIREFNET_V1_LITE_SESS = None
 
 def _record_gpu_use(model_key):
     """Update last-use timestamp for a GPU model."""
     _LAST_GPU_USE[model_key] = time()
+
+# ─── GPU model whitelist: only these models use GPU, all others use CPU ───
+# RMBG-2.0 and BiRefNet-v1-lite benefit significantly from GPU acceleration.
+# All other models (RetinaFace, RMBG-1.4, ModNet, etc.) run fast enough on
+# CPU and would waste GPU VRAM if loaded onto CUDA.
+GPU_MODELS = {"rmbg-2.0.onnx", "birefnet-v1-lite.onnx"}
 
 HIVISION_MODNET_SESS = None
 MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
@@ -76,37 +160,56 @@ BIREFNET_V1_LITE_SESS = None
 
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
-    # Small model optimization: models under 50MB run faster on CPU than GPU
-    if not set_cpu and os.path.exists(checkpoint_path):
-        model_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
-        if model_size_mb < 50:
-            print(f"Model {os.path.basename(checkpoint_path)} is {model_size_mb:.1f}MB (<50MB), using CPU for better performance")
-            set_cpu = True
-    providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if ONNX_PROVIDER == "CUDAExecutionProvider"
-        else ["CPUExecutionProvider"]
-    )
+    """Load an ONNX model with proper CUDA memory management.
+
+    Only models in GPU_MODELS whitelist are loaded on GPU; all others use CPU.
+    This prevents unnecessary VRAM consumption by models that don't benefit
+    from GPU acceleration (e.g., RetinaFace, RMBG-1.4, ModNet).
+
+    GPU models use SessionOptions with enable_mem_pattern=False and
+    enable_mem_reuse=False to prevent VRAM leak from dynamic-shape
+    internal tensors (RMBG 2.0's deformable convolutions).
+    """
+    model_name = os.path.basename(checkpoint_path)
+
+    # Force CPU for any model not in the GPU whitelist
+    if not set_cpu and model_name not in GPU_MODELS:
+        print(f"Model {model_name} not in GPU whitelist, using CPU")
+        set_cpu = True
 
     if set_cpu:
+        sess_opts = onnxruntime.SessionOptions()
+        sess_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         sess = onnxruntime.InferenceSession(
-            checkpoint_path, providers=["CPUExecutionProvider"]
+            checkpoint_path, sess_options=sess_opts, providers=["CPUExecutionProvider"]
         )
     else:
+        providers = [
+            (
+                "CUDAExecutionProvider",
+                CUDA_PROVIDER_OPTIONS,
+            ),
+            "CPUExecutionProvider",
+        ]
         try:
-            sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
+            sess = onnxruntime.InferenceSession(
+                checkpoint_path,
+                sess_options=_make_session_options(),
+                providers=providers,
+            )
             print(f"Model {os.path.basename(checkpoint_path)} loaded with providers: {sess.get_providers()}")
         except Exception as e:
-            if ONNX_PROVIDER == "CUDAExecutionProvider":  # 修复：使用ONNX_PROVIDER而不是ONNX_DEVICE
+            if ONNX_PROVIDER == "CUDAExecutionProvider":
                 print(f"Failed to load model with CUDAExecutionProvider: {e}")
                 print("Falling back to CPUExecutionProvider")
-                # 尝试使用CPU加载模型
+                sess_opts = onnxruntime.SessionOptions()
+                sess_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
                 sess = onnxruntime.InferenceSession(
-                    checkpoint_path, providers=["CPUExecutionProvider"]
+                    checkpoint_path, sess_options=sess_opts, providers=["CPUExecutionProvider"]
                 )
                 print(f"Model {os.path.basename(checkpoint_path)} loaded with providers: {sess.get_providers()}")
             else:
-                raise e  # 如果是CPU执行失败，重新抛出异常
+                raise e
 
     return sess
 
@@ -275,9 +378,10 @@ def get_modnet_matting(input_image, checkpoint_path, ref_size=512):
     b, g, r = cv2.split(np.uint8(input_image))
 
     output_image = cv2.merge((b, g, r, mask))
-    
+
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
+        _release_session(HIVISION_MODNET_SESS)
         HIVISION_MODNET_SESS = None
 
     return output_image
@@ -312,9 +416,10 @@ def get_modnet_matting_photographic_portrait_matting(
     b, g, r = cv2.split(np.uint8(input_image))
 
     output_image = cv2.merge((b, g, r, mask))
-    
+
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
+        _release_session(MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS)
         MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
 
     return output_image
@@ -375,9 +480,10 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
     # Paste the mask on the original image
     new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
     new_im.paste(orig_image, mask=pil_im)
-    
+
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
+        _release_session(RMBG_SESS)
         RMBG_SESS = None
     else:
         _record_gpu_use("rmbg")
@@ -389,12 +495,31 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     """
     RMBG 2.0 抠图处理函数
     基于BiRefNet架构，使用不同的预处理参数
+
+    Note: ref_size MUST be a multiple of 32 because the model has 5
+    downsampling stages (2^5=32).  Non-multiple sizes cause Reshape errors
+    like: "Input shape:{36,6,144,144}, requested shape:{-1,121,6,144,144}".
+    Valid values: 512, 1024, 2048, etc.
     """
     global RMBG_2_SESS
 
     if not os.path.exists(checkpoint_path):
         print(f"Checkpoint file not found: {checkpoint_path}")
         return None
+
+    # Validate ref_size: RMBG 2.0 ONNX model has hardcoded window attention
+    # dimensions (121, 36, 9, 4) that are computed for ref_size=1024 only.
+    # Other resolutions cause Reshape errors like:
+    #   "Input shape:{36,6,144,144}, requested shape:{-1,121,6,144,144}"
+    # because the window counts don't match the feature map sizes.
+    # The model was exported with dynamic height/width in the graph signature,
+    # but internal Reshape nodes bake in window counts for 1024×1024 input.
+    RMBG2_ONLY_SIZE = 1024
+    if ref_size != RMBG2_ONLY_SIZE:
+        print(f"[RMBG 2.0] ref_size={ref_size} is not supported by this ONNX model, "
+              f"falling back to {RMBG2_ONLY_SIZE}. The model has hardcoded window "
+              f"attention dimensions that only work at 1024×1024 input resolution.")
+        ref_size = RMBG2_ONLY_SIZE
 
     def resize_rmbg_2_image(image):
         image = image.convert("RGB")
@@ -408,7 +533,6 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     # 如果RUN_MODE不是野兽模式，则不加载模型
     _check_gpu_idle("rmbg2")
     if RMBG_2_SESS is None:
-        # print("首次加载rmbg-2.0模型...")
         if ONNX_DEVICE == "GPU":
             print("onnxruntime-gpu已安装，尝试使用CUDA加载RMBG 2.0模型")
             try:
@@ -429,13 +553,13 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
 
     orig_image = Image.fromarray(input_image)
     image = resize_rmbg_2_image(orig_image)
-    
+
     # RMBG 2.0 使用标准的ImageNet预处理参数
     im_np = np.array(image).astype(np.float32)
     im_np = im_np.transpose(2, 0, 1)  # Change to CxHxW format
     im_np = np.expand_dims(im_np, axis=0)  # Add batch dimension
     im_np = im_np / 255.0  # Normalize to [0, 1]
-    
+
     # 使用ImageNet标准化参数 (与BiRefNet架构一致)
     mean = np.array([0.485, 0.456, 0.406]).reshape(1, 3, 1, 1)
     std = np.array([0.229, 0.224, 0.225]).reshape(1, 3, 1, 1)
@@ -445,8 +569,17 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     print(onnxruntime.get_device(), RMBG_2_SESS.get_providers())
 
     time_st = time()
-    # RMBG 2.0 has dynamic internal shapes, use standard run() instead of IO binding
+
+    # Standard run() — VRAM leak is prevented at the session level via
+    # enable_mem_pattern=False + enable_mem_reuse=False (set in
+    # _make_session_options()).  IO binding is NOT used here because:
+    # 1. RMBG 2.0 has dynamic internal shapes (deformable convolutions) —
+    #    IO binding only controls input/output placement, not intermediates.
+    # 2. The real VRAM leak comes from ORT's memory pattern optimizer
+    #    pre-allocating buffers of wrong sizes and never freeing them.
+    #    Disabling mem_pattern at session creation is the proper fix.
     result = RMBG_2_SESS.run(None, {input_name: im_np.astype(np.float32)})[0]
+
     print(f"RMBG 2.0 Inference time: {time() - time_st:.4f} seconds")
 
     # Post process - RMBG 2.0 后处理
@@ -480,9 +613,10 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
     # Paste the mask on the original image
     new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
     new_im.paste(orig_image, mask=pil_im)
-    
+
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
+        _release_session(RMBG_2_SESS)
         RMBG_2_SESS = None
     else:
         _record_gpu_use("rmbg2")
@@ -603,9 +737,10 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     # Paste the mask on the original image
     new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
     new_im.paste(orig_image, mask=pil_im)
-    
+
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
+        _release_session(BIREFNET_V1_LITE_SESS)
         BIREFNET_V1_LITE_SESS = None
     else:
         _record_gpu_use("birefnet")

@@ -192,8 +192,8 @@ def create_ui(
                             interactive=True,
                         )
                         matting_resolution_option = gr.Dropdown(
-                            choices=[512, 1024, 2048],
-                            label="处理分辨率 / Processing Resolution",
+                            choices=[1024],
+                            label="处理分辨率 / Processing Resolution (RMBG 2.0 仅支持 1024)",
                             value=1024,
                             interactive=True,
                         )

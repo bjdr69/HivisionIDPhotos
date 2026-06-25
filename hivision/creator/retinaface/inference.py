@@ -53,39 +53,16 @@ ONNX_PROVIDER = (
 )
 
 
-def load_onnx_model(checkpoint_path, set_cpu=False):
-    # Small model optimization: models under 50MB run faster on CPU than GPU
-    if not set_cpu and os.path.exists(checkpoint_path):
-        model_size_mb = os.path.getsize(checkpoint_path) / (1024 * 1024)
-        if model_size_mb < 50:
-            print(f"RetinaFace model {os.path.basename(checkpoint_path)} is {model_size_mb:.1f}MB (<50MB), using CPU for better performance")
-            set_cpu = True
-    providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if ONNX_PROVIDER == "CUDAExecutionProvider"
-        else ["CPUExecutionProvider"]
+def load_onnx_model(checkpoint_path, set_cpu=True):
+    """Load RetinaFace ONNX model.
+
+    RetinaFace always uses CPU — it's not in the GPU model whitelist.
+    Running on CPU saves significant VRAM with negligible speed impact.
+    """
+    sess = onnxruntime.InferenceSession(
+        checkpoint_path, providers=["CPUExecutionProvider"]
     )
-
-    if set_cpu:
-        sess = onnxruntime.InferenceSession(
-            checkpoint_path, providers=["CPUExecutionProvider"]
-        )
-    else:
-        try:
-            sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
-            print(f"RetinaFace model loaded with providers: {sess.get_providers()}")
-        except Exception as e:
-            if ONNX_PROVIDER == "CUDAExecutionProvider":
-                print(f"Failed to load RetinaFace model with CUDAExecutionProvider: {e}")
-                print("Falling back to CPUExecutionProvider")
-                # 尝试使用CPU加载模型
-                sess = onnxruntime.InferenceSession(
-                    checkpoint_path, providers=["CPUExecutionProvider"]
-                )
-                print(f"RetinaFace model loaded with providers: {sess.get_providers()}")
-            else:
-                raise e  # 如果是CPU执行失败，重新抛出异常
-
+    print(f"RetinaFace model loaded with providers: {sess.get_providers()}")
     return sess
 
 
@@ -110,9 +87,9 @@ def retinaface_detect_faces(image, model_path: str, sess=None):
         "out_channel": 256,
     }
 
-    # Load ONNX model
+    # Load ONNX model (always CPU)
     if sess is None:
-        retinaface = load_onnx_model(model_path, set_cpu=False)
+        retinaface = load_onnx_model(model_path)
     else:
         retinaface = sess
 

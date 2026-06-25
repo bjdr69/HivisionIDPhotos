@@ -215,5 +215,19 @@ def detect_face_retinaface(ctx: Context):
     ctx.face["roll_angle"] = roll_angle
 
     # 如果RUN_MODE不是野兽模式，则释放模型
-    if os.getenv("RUN_MODE") == "beast":
+    if os.getenv("RUN_MODE") != "beast":
+        # Properly release CUDA memory
+        if RETINAFCE_SESS is not None:
+            try:
+                del RETINAFCE_SESS
+            except Exception:
+                pass
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
         RETINAFCE_SESS = None
