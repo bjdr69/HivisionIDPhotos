@@ -92,6 +92,7 @@ def _make_session_options():
 # GPU idle timeout: release unused GPU model memory after inactivity
 _LAST_GPU_USE = {}
 IDLE_TIMEOUT = 300  # 5 minutes
+_IDLE_TIMER_RUNNING = False
 
 
 def _release_session(session):
@@ -150,9 +151,46 @@ def _check_gpu_idle(model_key):
             BIREFNET_V1_LITE_SESS = None
             _release_session(sess)
 
+
+def _check_all_gpu_idle():
+    """Check all GPU models for idle timeout; called by background timer."""
+    global _IDLE_TIMER_RUNNING
+    for key in ["rmbg", "rmbg2", "birefnet"]:
+        _check_gpu_idle(key)
+    # If all models are released, stop the timer — no more VRAM to free
+    if RMBG_SESS is None and RMBG_2_SESS is None and BIREFNET_V1_LITE_SESS is None:
+        _IDLE_TIMER_RUNNING = False
+        return
+    # Still have loaded models — schedule next check at the earliest expiry
+    now = time()
+    remaining = []
+    for key in ["rmbg", "rmbg2", "birefnet"]:
+        last = _LAST_GPU_USE.get(key, 0)
+        if last > 0:
+            secs_until_expiry = IDLE_TIMEOUT - (now - last)
+            remaining.append(max(secs_until_expiry, 10))
+    if remaining:
+        wait = min(remaining) + 5  # check 5s after earliest expiry
+        _schedule_idle_check(wait)
+
+
+def _schedule_idle_check(delay=60):
+    """Schedule a background thread to check GPU idle after delay seconds."""
+    import threading
+    def _timer_func():
+        _check_all_gpu_idle()
+    t = threading.Timer(delay, _timer_func)
+    t.daemon = True  # don't block process exit
+    t.start()
+
+
 def _record_gpu_use(model_key):
-    """Update last-use timestamp for a GPU model."""
+    """Update last-use timestamp for a GPU model and ensure idle timer is running."""
+    global _IDLE_TIMER_RUNNING
     _LAST_GPU_USE[model_key] = time()
+    if not _IDLE_TIMER_RUNNING:
+        _IDLE_TIMER_RUNNING = True
+        _schedule_idle_check(IDLE_TIMEOUT + 5)
 
 # ─── GPU model whitelist: only these models use GPU, all others use CPU ───
 # RMBG-2.0 and BiRefNet-v1-lite benefit significantly from GPU acceleration.
