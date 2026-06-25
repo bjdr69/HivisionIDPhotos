@@ -91,7 +91,7 @@ def _make_session_options():
 
 # GPU idle timeout: release unused GPU model memory after inactivity
 _LAST_GPU_USE = {}
-IDLE_TIMEOUT = 300  # 5 minutes
+IDLE_TIMEOUT = 120  # 2 minutes
 _IDLE_TIMER_RUNNING = False
 
 
