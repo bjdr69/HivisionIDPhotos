@@ -216,10 +216,13 @@ def detect_face_retinaface(ctx: Context):
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        # Properly release CUDA memory
+        # Properly release CUDA memory:
+        # 1. Save reference  2. Set global to None  3. del + gc + empty_cache
         if RETINAFCE_SESS is not None:
+            sess = RETINAFCE_SESS
+            RETINAFCE_SESS = None
             try:
-                del RETINAFCE_SESS
+                del sess
             except Exception:
                 pass
             import gc
@@ -230,4 +233,3 @@ def detect_face_retinaface(ctx: Context):
                     torch.cuda.empty_cache()
             except ImportError:
                 pass
-        RETINAFCE_SESS = None

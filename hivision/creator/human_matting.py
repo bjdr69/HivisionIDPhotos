@@ -97,18 +97,23 @@ IDLE_TIMEOUT = 300  # 5 minutes
 def _release_session(session):
     """Properly release an ONNX InferenceSession and its CUDA memory.
 
-    Setting the Python variable to None is NOT sufficient — the C++ backend
-    holds CUDA allocations that Python GC may never reclaim.  We must:
-      1. Close the session (releases ORT internal resources)
-      2. Force Python GC to collect the orphaned object
-      3. If PyTorch is loaded, empty its CUDA cache (ORT may share the allocator)
+    IMPORTANT: The caller MUST set the global variable to None BEFORE
+    calling this function.  Otherwise the global reference keeps the
+    object alive and del only removes the local parameter.
+
+    Correct usage:
+        sess = RMBG_2_SESS
+        RMBG_2_SESS = None      # ← break global reference first
+        _release_session(sess)  # ← then release the orphaned object
+
+    Steps:
+      1. del the session object (triggers C++ destructor → frees CUDA)
+      2. Force Python GC to collect any lingering references
+      3. If PyTorch is loaded, empty its CUDA cache
     """
     if session is None:
         return
     try:
-        # ORT InferenceSession has no explicit close(), but deleting all refs
-        # triggers the C++ destructor which frees CUDA memory.
-        # We explicitly del to speed this up.
         del session
     except Exception:
         pass
@@ -131,16 +136,19 @@ def _check_gpu_idle(model_key):
     if last > 0 and (now - last) > IDLE_TIMEOUT:
         if model_key == "rmbg" and RMBG_SESS is not None:
             print(f"[GPU Idle] Releasing rmbg model after {(now - last):.0f}s idle")
-            _release_session(RMBG_SESS)
+            sess = RMBG_SESS
             RMBG_SESS = None
+            _release_session(sess)
         elif model_key == "rmbg2" and RMBG_2_SESS is not None:
             print(f"[GPU Idle] Releasing rmbg2 model after {(now - last):.0f}s idle")
-            _release_session(RMBG_2_SESS)
+            sess = RMBG_2_SESS
             RMBG_2_SESS = None
+            _release_session(sess)
         elif model_key == "birefnet" and BIREFNET_V1_LITE_SESS is not None:
             print(f"[GPU Idle] Releasing birefnet model after {(now - last):.0f}s idle")
-            _release_session(BIREFNET_V1_LITE_SESS)
+            sess = BIREFNET_V1_LITE_SESS
             BIREFNET_V1_LITE_SESS = None
+            _release_session(sess)
 
 def _record_gpu_use(model_key):
     """Update last-use timestamp for a GPU model."""
@@ -381,8 +389,9 @@ def get_modnet_matting(input_image, checkpoint_path, ref_size=512):
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        _release_session(HIVISION_MODNET_SESS)
+        sess = HIVISION_MODNET_SESS
         HIVISION_MODNET_SESS = None
+        _release_session(sess)
 
     return output_image
 
@@ -419,8 +428,9 @@ def get_modnet_matting_photographic_portrait_matting(
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        _release_session(MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS)
+        sess = MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS
         MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
+        _release_session(sess)
 
     return output_image
 
@@ -483,8 +493,9 @@ def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        _release_session(RMBG_SESS)
+        sess = RMBG_SESS
         RMBG_SESS = None
+        _release_session(sess)
     else:
         _record_gpu_use("rmbg")
 
@@ -616,8 +627,9 @@ def get_rmbg_2_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024, 
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        _release_session(RMBG_2_SESS)
+        sess = RMBG_2_SESS
         RMBG_2_SESS = None
+        _release_session(sess)
     else:
         _record_gpu_use("rmbg2")
 
@@ -740,8 +752,9 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
 
     # 如果RUN_MODE不是野兽模式，则释放模型
     if os.getenv("RUN_MODE") != "beast":
-        _release_session(BIREFNET_V1_LITE_SESS)
+        sess = BIREFNET_V1_LITE_SESS
         BIREFNET_V1_LITE_SESS = None
+        _release_session(sess)
     else:
         _record_gpu_use("birefnet")
 
