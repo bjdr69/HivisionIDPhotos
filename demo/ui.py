@@ -43,7 +43,24 @@ def create_ui(
     if DEFAULT_FACE_DETECT_MODEL not in face_detect_models:
         DEFAULT_FACE_DETECT_MODEL = "mtcnn"
 
-    demo = gr.Blocks(title="HivisionIDPhotos")
+    # 修复图片预览截断问题：Gradio Image 组件默认 object-fit: cover 会裁剪图片，
+    # 改为 contain 确保图片完整显示（上传预览、输出预览均适用）
+    custom_css = """
+    /* 上传后的图片预览 (ImageUploader 中的 .image-frame img) */
+    .image-frame img {
+        object-fit: contain !important;
+    }
+    /* 输出图片预览 (ImagePreview 中的 .image-frame img) */
+    .image-frame {
+        object-fit: contain !important;
+    }
+    /* 兜底：所有 Gradio Image 组件内的 img 标签 */
+    [data-testid="image"] img {
+        object-fit: contain !important;
+    }
+    """
+
+    demo = gr.Blocks(title="HivisionIDPhotos", css=custom_css)
 
     with demo:
         gr.HTML(load_description(os.path.join(root_dir, "demo/assets/title.md")))

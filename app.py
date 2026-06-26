@@ -1,6 +1,10 @@
 import argparse
 import os
 
+# 修复 Starlette FileResponse Content-Length 不匹配问题
+from safe_file_response import apply_patch
+apply_patch()
+
 # 预加�?PyTorch �?cuDNN（在所有其他导入之前）
 import torch
 import onnxruntime as ort

@@ -412,25 +412,23 @@ class IDPhotoProcessor:
             )
         )
 
-        # 调整图片大小
-        output_image_path_dict = self._save_image(
-            result_image_standard,
-            result_image_hd,
-            result_image_layout,
-            idphoto_json,
-            format="jpeg" if idphoto_json["jpeg_format_option"] else "png",
-        )
+        # 返回 numpy 数组而非文件路径，避免 FileResponse Content-Length 不匹配错误
+        # Gradio 会将 numpy 数组保存到自己的缓存目录，确保文件服务可靠
+        result_image_standard_display = np.uint8(result_image_standard)
+        result_image_hd_display = np.uint8(result_image_hd)
 
-        # 返回
+        # 排版照：转换为 numpy 数组
         if result_image_layout is not None:
-            result_image_layout = output_image_path_dict["layout"]["path"]
+            result_image_layout_display = np.uint8(result_image_layout)
+        else:
+            result_image_layout_display = None
 
         return self._create_response(
-            output_image_path_dict["standard"]["path"],
-            output_image_path_dict["hd"]["path"],
+            result_image_standard_display,
+            result_image_hd_display,
             result_image_standard_png,
             result_image_hd_png,
-            gr.update(value=result_image_layout, visible=result_image_layout_visible),
+            gr.update(value=result_image_layout_display, visible=result_image_layout_visible),
             gr.update(
                 value=result_image_template, visible=result_image_template_visible
             ),
@@ -570,6 +568,9 @@ class IDPhotoProcessor:
         result_image_hd = add_watermark(image=result_image_hd, **watermark_params)
         return result_image_standard, result_image_hd
 
+    # NOTE: _save_image is currently unused since we return numpy arrays
+    # instead of file paths. Kept for potential future download feature
+    # that needs KB/DPI control.
     def _save_image(
         self,
         result_image_standard,
@@ -644,27 +645,24 @@ class IDPhotoProcessor:
         elif custom_kb:
             output_paths["standard"]["path"] += f"_{custom_kb}kb.{format}"
             output_paths["hd"]["path"] += f".{format}"
-            for key in output_paths:
-                if key == "layout" and result_image_layout is None:
-                    continue
-                output_paths[key]["path"] += f".{format}"
+            output_paths["layout"]["path"] += f".{format}"
 
-                # 只调整标准图像大小
-                resize_image_to_kb(
-                    result_image_standard,
-                    output_paths["standard"]["path"],
-                    custom_kb,
-                    dpi=300,
-                )
+            # 只调整标准图像大小
+            resize_image_to_kb(
+                result_image_standard,
+                output_paths["standard"]["path"],
+                custom_kb,
+                dpi=300,
+            )
 
-                # 保存高清图像和排版图像
+            # 保存高清图像和排版图像
+            save_image_dpi_to_bytes(
+                result_image_hd, output_paths["hd"]["path"], dpi=300
+            )
+            if result_image_layout is not None:
                 save_image_dpi_to_bytes(
-                    result_image_hd, output_paths["hd"]["path"], dpi=300
+                    result_image_layout, output_paths["layout"]["path"], dpi=300
                 )
-                if result_image_layout is not None:
-                    save_image_dpi_to_bytes(
-                        result_image_layout, output_paths["layout"]["path"], dpi=300
-                    )
 
             return output_paths
         # 没有自定义设置
